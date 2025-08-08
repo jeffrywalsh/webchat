@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register - IRC Chat</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="auth-page">
+<div class="auth-container">
+    <div class="auth-card">
+        <h1>Join IRC Chat</h1>
+        <p>Register your nickname</p>
+
+        <form id="registerForm" class="auth-form">
+            <div class="form-group">
+                <label for="username">Nickname</label>
+                <input type="text" id="username" name="username" required
+                       minlength="3" maxlength="50" pattern="[a-zA-Z0-9_]+"
+                       title="Nickname can only contain letters, numbers, and underscores"
+                       autocomplete="username"
+                       placeholder="Choose a unique nickname">
+            </div>
+
+            <div class="form-group">
+                <label for="display_name">Display Name</label>
+                <input type="text" id="display_name" name="display_name" required
+                       maxlength="100" autocomplete="name"
+                       placeholder="Your display name">
+            </div>
+
+            <div class="form-group">
+                <label for="email">Email (optional)</label>
+                <input type="email" id="email" name="email" maxlength="100"
+                       autocomplete="email"
+                       placeholder="your.email@example.com">
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required
+                       minlength="6" autocomplete="new-password"
+                       placeholder="Choose a secure password">
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="registerBtn">
+                Register & Connect
+            </button>
+        </form>
+
+        <div id="error-message" class="error-message" style="display: none;"></div>
+
+        <div class="auth-footer">
+            <p>Already registered? <a href="/login">Connect now</a></p>
+        </div>
+    </div>
+</div>
+
+<script src="/js/auth.js"></script>
+</body>
+</html>

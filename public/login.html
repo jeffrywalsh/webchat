@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect to IRC Chat</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="auth-page">
+<div class="auth-container">
+    <div class="auth-card">
+        <h1>IRC Chat</h1>
+        <p>Connect to the server</p>
+
+        <form id="loginForm" class="auth-form">
+            <div class="form-group">
+                <label for="username">Nickname</label>
+                <input type="text" id="username" name="username" required
+                       minlength="3" maxlength="50" autocomplete="username"
+                       placeholder="Enter your nickname">
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required
+                       autocomplete="current-password"
+                       placeholder="Enter your password">
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="loginBtn">
+                Connect
+            </button>
+        </form>
+
+        <div id="error-message" class="error-message" style="display: none;"></div>
+
+        <div class="auth-footer">
+            <p>New user? <a href="/register">Register an account</a></p>
+        </div>
+    </div>
+</div>
+
+<script src="/js/auth.js"></script>
+</body>
+</html>

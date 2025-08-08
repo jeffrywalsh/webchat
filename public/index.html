@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IRC Chat</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="chat-page">
+<div class="chat-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2>IRC Chat</h2>
+            <div class="user-info">
+                <span id="current-user-name">Loading...</span>
+                <button id="logout-btn" class="btn btn-small">Quit</button>
+            </div>
+        </div>
+
+        <!-- Channels Section -->
+        <div class="sidebar-section">
+            <div class="section-header">
+                <h3>📺 Channels</h3>
+                <div class="section-actions">
+                    <button id="browse-channels-btn" class="btn btn-mini" title="Browse Channels">📋</button>
+                    <button id="create-room-btn" class="btn btn-mini" title="Create Channel">+</button>
+                </div>
+            </div>
+            <ul id="rooms-list" class="list">
+                <!-- Channels will be populated here -->
+            </ul>
+        </div>
+
+        <!-- Current Channel Users -->
+        <div class="sidebar-section" id="current-room-users-section" style="display: none;">
+            <h3 id="current-room-users-title">👥 Users in #channel</h3>
+            <ul id="current-room-users" class="list">
+                <!-- Current channel users will be populated here -->
+            </ul>
+        </div>
+
+        <!-- Friends Section -->
+        <div class="sidebar-section">
+            <div class="section-header">
+                <h3>👥 Friends</h3>
+                <div class="section-actions">
+                    <button id="friend-requests-btn" class="btn btn-mini" title="Friend Requests">
+                        <span id="friend-requests-count" class="notification-badge" style="display: none;">0</span>
+                        📬
+                    </button>
+                </div>
+            </div>
+            <ul id="friends-list" class="list">
+                <!-- Friends will be populated here -->
+            </ul>
+        </div>
+
+        <!-- Direct Messages Section -->
+        <div class="sidebar-section">
+            <div class="section-header">
+                <h3>💬 Private Messages</h3>
+                <div class="section-actions">
+                    <button id="clear-hidden-conversations-btn" class="btn btn-mini" title="Show Hidden">👁️</button>
+                </div>
+            </div>
+            <ul id="dm-list" class="list">
+                <!-- Active DM conversations will show here -->
+            </ul>
+        </div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="chat-main">
+        <div class="chat-header">
+            <div class="chat-header-content">
+                <h2 id="chat-title">Select a channel to start chatting</h2>
+                <button id="leave-channel-btn" class="btn btn-small btn-leave" style="display: none;">Leave</button>
+            </div>
+            <div id="typing-indicator" class="typing-indicator" style="display: none;">
+                Someone is typing...
+            </div>
+        </div>
+
+        <div class="chat-messages" id="chat-messages">
+            <div class="welcome-message">
+                Welcome to IRC Chat!<br>
+                Select a channel from the sidebar to start chatting.
+            </div>
+        </div>
+
+        <div class="chat-input-container">
+            <form id="message-form" class="message-form">
+                <input type="text" id="message-input" placeholder="Type a message and press Enter..."
+                       maxlength="2000" autocomplete="off">
+                <button type="submit" class="btn btn-primary btn-send">Send</button>
+            </form>
+        </div>
+    </main>
+</div>
+
+<!-- Connection Status -->
+<div id="connection-status" class="connection-status" style="display: none;">
+    Disconnected
+</div>
+
+<!-- Friend Requests Modal -->
+<div id="friend-requests-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>📬 Friend Management</h2>
+            <span class="close" id="close-friend-requests-modal">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div class="friend-requests-container">
+                <div class="friend-section">
+                    <h3>📥 Received Requests</h3>
+                    <ul id="received-requests-list" class="friend-requests-list">
+                        <li class="loading-item">Loading requests...</li>
+                    </ul>
+                </div>
+
+                <div class="friend-section">
+                    <h3>📤 Sent Requests</h3>
+                    <ul id="sent-requests-list" class="friend-requests-list">
+                        <li class="loading-item">Loading requests...</li>
+                    </ul>
+                </div>
+
+                <div class="friend-section">
+                    <h3>👥 Current Friends</h3>
+                    <ul id="modal-friends-list" class="friend-requests-list">
+                        <li class="loading-item">Loading friends...</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- DM Context Menu -->
+<div id="dm-context-menu" class="context-menu" style="display: none;">
+    <div class="context-menu-item" data-action="close">
+        <span class="context-icon">👁️‍🗨️</span>
+        <span>Close Conversation</span>
+    </div>
+    <div class="context-menu-item" data-action="delete">
+        <span class="context-icon">🗑️</span>
+        <span>Delete Conversation</span>
+    </div>
+    <div class="context-menu-item" data-action="view-profile">
+        <span class="context-icon">👤</span>
+        <span>View Profile</span>
+    </div>
+</div>
+
+<!-- Browse Channels Modal -->
+<div id="browse-channels-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>📋 Browse Channels</h2>
+            <span class="close" id="close-browse-modal">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div class="channels-list-container">
+                <div class="channels-filter">
+                    <input type="text" id="channel-search" placeholder="Search channels..." class="form-control">
+                </div>
+                <ul id="available-channels" class="channels-browser-list">
+                    <li class="loading-item">Loading channels...</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Room Modal -->
+<div id="create-room-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>➕ Create Channel</h2>
+            <span class="close" id="close-create-modal">&times;</span>
+        </div>
+        <div class="modal-body">
+            <form id="create-room-form">
+                <div class="form-group">
+                    <label for="room-name">Channel Name (no # needed)</label>
+                    <input type="text" id="room-name" name="name" required
+                           pattern="[a-zA-Z0-9_-]+" maxlength="100"
+                           placeholder="general"
+                           title="Channel name can only contain letters, numbers, hyphens, and underscores">
+                </div>
+                <div class="form-group">
+                    <label for="room-display-name">Display Name</label>
+                    <input type="text" id="room-display-name" name="display_name" required maxlength="100"
+                           placeholder="#general">
+                </div>
+                <div class="form-group">
+                    <label for="room-description">Topic (optional)</label>
+                    <textarea id="room-description" name="description" maxlength="500"
+                              placeholder="General discussion channel"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="room-private" name="is_private">
+                        Private Channel
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary">Create Channel</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Load scripts in correct order -->
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/socket.js"></script>
+<script src="/js/chat.js"></script>
+</body>
+</html>
