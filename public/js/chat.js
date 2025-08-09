@@ -1,4 +1,4 @@
-// public/js/chat.js - Enhanced IRC chat with complete friend management
+// public/js/chat.js - Enhanced IRC chat with robust online status handling
 
 // Chat application state
 let socket = null;
@@ -10,14 +10,18 @@ let currentConversationId = null;
 let typingTimeout = null;
 let roomUsers = new Map();
 let friends = new Map();
+let onlineUsers = new Map();
 let friendshipStatuses = new Map(); // Track friendship status for each user
 let dmConversations = new Map();
 let availableChannels = [];
 let contextMenuTarget = null;
+let messageContextMenuTarget = null;
+let reconnectAttempts = 0;
+let statusRefreshInterval = null;
 
 document.addEventListener('DOMContentLoaded', function() {
     try {
-        console.log('🚀 Starting enhanced chat with complete friend management');
+        console.log('🚀 Starting enhanced chat with robust status handling');
         initializeChat();
         setupEventListeners();
         console.log('✅ Enhanced chat initialization completed');
@@ -45,9 +49,34 @@ async function initializeChat() {
         updateUserInfo();
         initializeSocket();
 
+        // Start periodic status refresh (every 30 seconds)
+        startStatusRefresh();
+
     } catch (error) {
         console.error('Failed to initialize chat:', error);
         window.location.href = '/login';
+    }
+}
+
+// Start periodic status refresh to ensure online status is accurate
+function startStatusRefresh() {
+    if (statusRefreshInterval) {
+        clearInterval(statusRefreshInterval);
+    }
+
+    statusRefreshInterval = setInterval(() => {
+        if (socket && socket.connected) {
+            console.log('🔄 Periodic status refresh');
+            socket.emit('refresh_my_status');
+        }
+    }, 30000); // Every 30 seconds
+}
+
+// Stop status refresh
+function stopStatusRefresh() {
+    if (statusRefreshInterval) {
+        clearInterval(statusRefreshInterval);
+        statusRefreshInterval = null;
     }
 }
 
@@ -59,10 +88,33 @@ function setupEventListeners() {
         event.preventDefault();
     });
 
+    // Handle page visibility changes for better status management
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && socket && socket.connected) {
+            console.log('🔄 Page became visible, refreshing status');
+            socket.emit('refresh_my_status');
+            refreshAllData();
+        }
+    });
+
+    // Handle online/offline events
+    window.addEventListener('online', () => {
+        console.log('🌐 Browser detected online status');
+        if (socket && !socket.connected) {
+            socket.connect();
+        }
+    });
+
+    window.addEventListener('offline', () => {
+        console.log('🌐 Browser detected offline status');
+        updateConnectionStatus('disconnected');
+    });
+
     // Logout button
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn) {
         logoutBtn.addEventListener('click', () => {
+            stopStatusRefresh();
             if (typeof window.logout === 'function') {
                 window.logout();
             } else {
@@ -105,11 +157,70 @@ function setupEventListeners() {
 
     // Context menu handling
     setupContextMenu();
+    setupMessageContextMenu();
 
-    // Click outside to close context menu
+    // Click outside to close context menus
     document.addEventListener('click', () => {
         hideContextMenu();
+        hideMessageContextMenu();
     });
+
+    // Add manual refresh button to chat header
+    addManualRefreshButton();
+}
+
+// Add manual refresh button for debugging and manual status updates
+function addManualRefreshButton() {
+    const chatHeader = document.querySelector('.chat-header-actions');
+    if (chatHeader) {
+        const refreshBtn = document.createElement('button');
+        refreshBtn.id = 'manual-refresh-btn';
+        refreshBtn.className = 'btn btn-small';
+        refreshBtn.title = 'Refresh Status & Data';
+        refreshBtn.innerHTML = '🔄';
+        refreshBtn.style.display = 'none'; // Hidden by default, show for debugging
+
+        refreshBtn.addEventListener('click', () => {
+            console.log('🔄 Manual refresh triggered');
+            if (socket && socket.connected) {
+                refreshAllData();
+                showNotification('Refreshing all data...', 'info');
+            } else {
+                showNotification('Not connected to server', 'error');
+            }
+        });
+
+        chatHeader.appendChild(refreshBtn);
+
+        // Show refresh button when holding Ctrl+Shift (for debugging)
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey) {
+                refreshBtn.style.display = 'inline-block';
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (!e.ctrlKey || !e.shiftKey) {
+                refreshBtn.style.display = 'none';
+            }
+        });
+    }
+}
+
+// Refresh all data from server
+function refreshAllData() {
+    if (!socket || !socket.connected) return;
+
+    console.log('🔄 Refreshing all client data');
+    socket.emit('refresh_my_status');
+    socket.emit('get_friends_list');
+    socket.emit('get_dm_conversations');
+    socket.emit('get_online_users');
+    socket.emit('get_friend_requests_count');
+
+    if (currentRoom) {
+        socket.emit('get_room_users', { roomId: currentRoom });
+    }
 }
 
 // Setup friend management
@@ -130,6 +241,133 @@ function setupDMManagement() {
         clearHiddenBtn.addEventListener('click', () => {
             showNotification('Feature coming soon!', 'info');
         });
+    }
+}
+
+// Setup message context menu
+function setupMessageContextMenu() {
+    // Create message context menu if it doesn't exist
+    let messageContextMenu = document.getElementById('message-context-menu');
+    if (!messageContextMenu) {
+        messageContextMenu = document.createElement('div');
+        messageContextMenu.id = 'message-context-menu';
+        messageContextMenu.className = 'context-menu';
+        messageContextMenu.style.display = 'none';
+        messageContextMenu.innerHTML = `
+            <div class="context-menu-item" data-action="delete-for-me">
+                <span class="context-icon">🗑️</span>
+                <span>Delete for me</span>
+            </div>
+            <div class="context-menu-item" data-action="delete-for-everyone">
+                <span class="context-icon">❌</span>
+                <span>Delete for everyone</span>
+            </div>
+            <div class="context-menu-item" data-action="copy-message">
+                <span class="context-icon">📋</span>
+                <span>Copy message</span>
+            </div>
+        `;
+        document.body.appendChild(messageContextMenu);
+    }
+
+    // Handle message context menu item clicks
+    messageContextMenu.addEventListener('click', (e) => {
+        const item = e.target.closest('.context-menu-item');
+        if (!item || !messageContextMenuTarget) return;
+
+        const action = item.dataset.action;
+        const messageId = messageContextMenuTarget.dataset.messageId;
+        const messageContent = messageContextMenuTarget.querySelector('.message-content')?.textContent;
+        const isSentByCurrentUser = messageContextMenuTarget.classList.contains('own');
+
+        switch (action) {
+            case 'delete-for-me':
+                deleteMessage(messageId, 'me');
+                break;
+            case 'delete-for-everyone':
+                if (isSentByCurrentUser) {
+                    deleteMessage(messageId, 'everyone');
+                } else {
+                    showNotification('You can only delete your own messages for everyone', 'warning');
+                }
+                break;
+            case 'copy-message':
+                if (messageContent) {
+                    navigator.clipboard.writeText(messageContent).then(() => {
+                        showNotification('Message copied to clipboard', 'success');
+                    }).catch(() => {
+                        showNotification('Failed to copy message', 'error');
+                    });
+                }
+                break;
+        }
+
+        hideMessageContextMenu();
+    });
+}
+
+// Delete a specific message
+async function deleteMessage(messageId, deleteFor = 'me') {
+    try {
+        const response = await fetch(`/api/messages/dm/${messageId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({ deleteFor })
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            showNotification(data.message, 'success');
+            // Real-time updates will be handled by socket events
+        } else {
+            const data = await response.json();
+            showNotification(data.error || 'Failed to delete message', 'error');
+        }
+    } catch (error) {
+        console.error('Error deleting message:', error);
+        showNotification('Failed to delete message', 'error');
+    }
+}
+
+// Delete all messages in current DM conversation
+async function deleteAllDMMessages(deleteFor = 'me') {
+    if (!currentDMRecipientId) {
+        showNotification('No active DM conversation', 'warning');
+        return;
+    }
+
+    const confirmMessage = deleteFor === 'everyone'
+        ? `Delete all messages in this conversation for everyone? This cannot be undone.`
+        : `Clear all messages in this conversation for you? This cannot be undone.`;
+
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/messages/dm/conversation/${currentDMRecipientId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({ deleteFor })
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            showNotification(data.message, 'success');
+            // Real-time updates will be handled by socket events
+        } else {
+            const data = await response.json();
+            showNotification(data.error || 'Failed to delete conversation', 'error');
+        }
+    } catch (error) {
+        console.error('Error deleting conversation:', error);
+        showNotification('Failed to delete conversation', 'error');
     }
 }
 
@@ -246,14 +484,22 @@ function displayModalFriendsList(container, friendsList) {
     friendsList.forEach(friend => {
         const li = document.createElement('li');
         li.className = 'friend-request-item';
+
+        const statusClass = friend.status === 'online' ? 'status-online' :
+            friend.status === 'away' ? 'status-away' : 'status-offline';
+
         li.innerHTML = `
             <div class="friend-request-info">
-                <div class="friend-request-name">${escapeHtml(friend.display_name)}</div>
+                <div class="friend-request-name">
+                    <span class="${statusClass}">●</span> 
+                    ${escapeHtml(friend.display_name)}
+                </div>
                 <div class="friend-request-username">@${escapeHtml(friend.username)} • ${friend.status}</div>
                 <div class="friend-request-time">Friends since ${formatTime(friend.friends_since)}</div>
             </div>
             <div class="friend-request-actions">
                 <button class="dm-button" data-username="${friend.username}" data-userid="${friend.friend_id}">MSG</button>
+                <button class="btn btn-small" onclick="deleteAllDMMessages('me')" title="Clear Messages for Me">🗑️</button>
                 <button class="btn-remove-friend" data-friendship-id="${friend.friendship_id}" data-name="${friend.display_name}">Remove</button>
             </div>
         `;
@@ -273,7 +519,7 @@ function displayModalFriendsList(container, friendsList) {
     });
 }
 
-// Friend request actions
+// Friend request actions - removed manual refresh calls since socket will handle updates
 async function acceptFriendRequest(friendshipId, displayName) {
     try {
         const response = await fetch(`/api/friends/accept/${friendshipId}`, {
@@ -283,9 +529,7 @@ async function acceptFriendRequest(friendshipId, displayName) {
 
         if (response.ok) {
             showNotification(`You are now friends with ${displayName}!`, 'success');
-            loadAllFriendData(); // Refresh modal
-            loadFriends(); // Refresh sidebar
-            refreshRoomUsers(); // Refresh channel users to update friend status
+            // Real-time updates will be handled by socket events
         } else {
             const data = await response.json();
             showNotification(data.error || 'Failed to accept friend request', 'error');
@@ -305,7 +549,7 @@ async function rejectFriendRequest(friendshipId, displayName) {
 
         if (response.ok) {
             showNotification(`Rejected friend request from ${displayName}`, 'info');
-            loadAllFriendData(); // Refresh modal
+            // Real-time updates will be handled by socket events
         } else {
             const data = await response.json();
             showNotification(data.error || 'Failed to reject friend request', 'error');
@@ -325,8 +569,7 @@ async function cancelFriendRequest(friendshipId, displayName) {
 
         if (response.ok) {
             showNotification(`Cancelled friend request to ${displayName}`, 'info');
-            loadAllFriendData(); // Refresh modal
-            refreshRoomUsers(); // Refresh channel users to update friend status
+            // Real-time updates will be handled by socket events
         } else {
             const data = await response.json();
             showNotification(data.error || 'Failed to cancel friend request', 'error');
@@ -337,25 +580,7 @@ async function cancelFriendRequest(friendshipId, displayName) {
     }
 }
 
-// Load user's friends
-async function loadFriends() {
-    try {
-        const response = await fetch('/api/friends', {
-            credentials: 'include'
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            displayFriends(data.friends);
-        } else {
-            console.error('Failed to load friends');
-        }
-    } catch (error) {
-        console.error('Error loading friends:', error);
-    }
-}
-
-// Display friends list in sidebar
+// Display friends list in sidebar with enhanced status display
 function displayFriends(friendsList) {
     const friendsListElement = document.getElementById('friends-list');
     if (!friendsListElement) return;
@@ -371,14 +596,25 @@ function displayFriends(friendsList) {
         return;
     }
 
-    friendsList.forEach(friend => {
+    // Sort friends by status (online first) then by name
+    const sortedFriends = friendsList.sort((a, b) => {
+        if (a.status === 'online' && b.status !== 'online') return -1;
+        if (b.status === 'online' && a.status !== 'online') return 1;
+        return a.display_name.localeCompare(b.display_name);
+    });
+
+    sortedFriends.forEach(friend => {
         friends.set(friend.username, friend);
 
         const li = document.createElement('li');
         li.className = 'friend-item';
+
+        const statusClass = friend.status === 'online' ? 'online' :
+            friend.status === 'away' ? 'away' : 'offline';
+
         li.innerHTML = `
             <div class="friend-info">
-                <span class="user-status ${friend.status}"></span>
+                <span class="user-status ${statusClass}"></span>
                 <span>${friend.display_name}</span>
             </div>
             <div class="friend-actions">
@@ -400,9 +636,11 @@ function displayFriends(friendsList) {
 
         friendsListElement.appendChild(li);
     });
+
+    console.log(`✅ Updated friends list: ${friendsList.length} friends, ${friendsList.filter(f => f.status === 'online').length} online`);
 }
 
-// Remove friend
+// Remove friend - removed manual refresh calls since socket will handle updates
 async function removeFriend(friendshipId, displayName) {
     try {
         const response = await fetch(`/api/friends/${friendshipId}`, {
@@ -412,9 +650,7 @@ async function removeFriend(friendshipId, displayName) {
 
         if (response.ok) {
             showNotification(`Removed ${displayName} from friends`, 'info');
-            loadFriends(); // Refresh friends list
-            loadAllFriendData(); // Refresh modal if open
-            refreshRoomUsers(); // Refresh channel users to update friend status
+            // Real-time updates will be handled by socket events
         } else {
             const data = await response.json();
             showNotification(data.error || 'Failed to remove friend', 'error');
@@ -425,7 +661,7 @@ async function removeFriend(friendshipId, displayName) {
     }
 }
 
-// Send friend request
+// Send friend request - removed manual refresh calls since socket will handle updates
 async function sendFriendRequest(userId, username) {
     try {
         const response = await fetch(`/api/friends/request/${userId}`, {
@@ -436,7 +672,7 @@ async function sendFriendRequest(userId, username) {
         if (response.ok) {
             const data = await response.json();
             showNotification(`Friend request sent to ${data.user.display_name}!`, 'success');
-            refreshRoomUsers(); // Refresh channel users to update button states
+            // Real-time updates will be handled by socket events
         } else {
             const data = await response.json();
             showNotification(data.error || 'Failed to send friend request', 'error');
@@ -462,13 +698,6 @@ async function checkFriendshipStatus(userId) {
         console.error('Error checking friendship status:', error);
     }
     return { status: 'none' };
-}
-
-// Refresh room users with updated friend status
-function refreshRoomUsers() {
-    if (currentRoom) {
-        socket.emit('get_room_users', { roomId: currentRoom });
-    }
 }
 
 // Update friend requests badge
@@ -502,6 +731,12 @@ function setupContextMenu() {
         switch (action) {
             case 'close':
                 hideConversation(conversationId);
+                break;
+            case 'clear-messages':
+                // Set the current DM recipient and clear messages
+                currentDMRecipientId = parseInt(userId);
+                currentDMRecipient = username;
+                deleteAllDMMessages('me');
                 break;
             case 'delete':
                 deleteConversation(conversationId);
@@ -745,7 +980,7 @@ async function hideConversation(conversationId) {
 
         if (response.ok) {
             showNotification('Conversation hidden', 'info');
-            loadDMConversations(); // Refresh conversations list
+            socket.emit('get_dm_conversations'); // Refresh via socket
         } else {
             const data = await response.json();
             showNotification(data.error || 'Failed to hide conversation', 'error');
@@ -770,7 +1005,7 @@ async function deleteConversation(conversationId) {
         if (response.ok) {
             const data = await response.json();
             showNotification(data.message, 'info');
-            loadDMConversations(); // Refresh conversations list
+            socket.emit('get_dm_conversations'); // Refresh via socket
 
             // If currently viewing this conversation, switch away
             if (currentConversationId == conversationId) {
@@ -820,6 +1055,44 @@ function hideContextMenu() {
     contextMenuTarget = null;
 }
 
+// Message context menu management
+function showMessageContextMenu(e, element) {
+    e.preventDefault();
+    const messageContextMenu = document.getElementById('message-context-menu');
+    if (!messageContextMenu) return;
+
+    messageContextMenuTarget = element;
+
+    messageContextMenu.style.display = 'block';
+    messageContextMenu.style.left = e.pageX + 'px';
+    messageContextMenu.style.top = e.pageY + 'px';
+
+    // Adjust position if menu would go off screen
+    const rect = messageContextMenu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        messageContextMenu.style.left = (e.pageX - rect.width) + 'px';
+    }
+    if (rect.bottom > window.innerHeight) {
+        messageContextMenu.style.top = (e.pageY - rect.height) + 'px';
+    }
+
+    // Show/hide delete for everyone option based on message ownership
+    const deleteForEveryoneOption = messageContextMenu.querySelector('[data-action="delete-for-everyone"]');
+    const isSentByCurrentUser = element.classList.contains('own');
+
+    if (deleteForEveryoneOption) {
+        deleteForEveryoneOption.style.display = isSentByCurrentUser ? 'block' : 'none';
+    }
+}
+
+function hideMessageContextMenu() {
+    const messageContextMenu = document.getElementById('message-context-menu');
+    if (messageContextMenu) {
+        messageContextMenu.style.display = 'none';
+    }
+    messageContextMenuTarget = null;
+}
+
 // Switch to welcome view
 function switchToWelcome() {
     currentRoom = null;
@@ -829,6 +1102,7 @@ function switchToWelcome() {
 
     document.getElementById('chat-title').textContent = 'Select a channel to start chatting';
     document.getElementById('leave-channel-btn').style.display = 'none';
+    document.getElementById('clear-dm-messages-btn').style.display = 'none';
     document.getElementById('current-room-users-section').style.display = 'none';
 
     // Clear selections
@@ -844,40 +1118,29 @@ function switchToWelcome() {
     messagesContainer.innerHTML = '<div class="welcome-message">Welcome to IRC Chat!<br>Select a channel from the sidebar to start chatting.</div>';
 }
 
-// Load DM conversations
-async function loadDMConversations() {
-    try {
-        const response = await fetch('/api/conversations', {
-            credentials: 'include'
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            handleDMConversations(data.conversations);
-        } else {
-            console.error('Failed to load DM conversations');
-        }
-    } catch (error) {
-        console.error('Error loading DM conversations:', error);
-    }
-}
-
-// Initialize Socket.io connection
+// Enhanced Socket.io connection with better reconnection handling
 function initializeSocket() {
     try {
         socket = io('/', {
             withCredentials: true,
-            transports: ['websocket', 'polling']
+            transports: ['websocket', 'polling'],
+            timeout: 20000,
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            maxReconnectionAttempts: 5
         });
 
         socket.on('connect', () => {
             console.log('✅ Connected to server', socket.id);
+            reconnectAttempts = 0;
             updateConnectionStatus('connected');
             addSystemMessage('Connected to server');
 
-            // Load initial data
-            loadFriends();
-            loadDMConversations();
+            // Refresh all data on connect/reconnect
+            setTimeout(() => {
+                refreshAllData();
+            }, 1000);
         });
 
         socket.on('disconnect', (reason) => {
@@ -890,14 +1153,26 @@ function initializeSocket() {
 
         socket.on('connect_error', (error) => {
             console.error('❌ Connection error:', error);
+            reconnectAttempts++;
             updateConnectionStatus('disconnected');
-            addSystemMessage('Connection error: ' + error.message);
+            addSystemMessage(`Connection error (attempt ${reconnectAttempts}): ${error.message}`);
         });
 
-        socket.on('reconnect', () => {
-            console.log('✅ Reconnected to server');
+        socket.on('reconnect', (attemptNumber) => {
+            console.log(`✅ Reconnected to server after ${attemptNumber} attempts`);
             updateConnectionStatus('connected');
-            addSystemMessage('Reconnected to server');
+            addSystemMessage(`Reconnected to server`);
+            showNotification('Reconnected to server', 'success');
+
+            // Force refresh all data after reconnection
+            setTimeout(() => {
+                refreshAllData();
+            }, 1000);
+        });
+
+        socket.on('reconnect_attempt', (attemptNumber) => {
+            console.log(`🔄 Reconnection attempt ${attemptNumber}`);
+            updateConnectionStatus('connecting');
         });
 
         socket.on('error', (error) => {
@@ -906,42 +1181,111 @@ function initializeSocket() {
         });
 
         // Chat events
-        socket.on('rooms_list', (data) => {
-            try { handleRoomsList(data); } catch (e) { console.error('rooms_list error:', e); }
-        });
-        socket.on('room_messages', (data) => {
-            try { handleRoomMessages(data); } catch (e) { console.error('room_messages error:', e); }
-        });
-        socket.on('room_users', (data) => {
-            try { handleRoomUsers(data); } catch (e) { console.error('room_users error:', e); }
-        });
-        socket.on('new_message', (data) => {
-            try { handleNewMessage(data); } catch (e) { console.error('new_message error:', e); }
-        });
-        socket.on('new_dm', (data) => {
-            try { handleNewDM(data); } catch (e) { console.error('new_dm error:', e); }
-        });
-        socket.on('dm_messages', (data) => {
-            try { handleDMMessages(data); } catch (e) { console.error('dm_messages error:', e); }
-        });
-        socket.on('dm_conversations', (data) => {
-            try { handleDMConversations(data); } catch (e) { console.error('dm_conversations error:', e); }
-        });
+        socket.on('rooms_list', handleRoomsList);
+        socket.on('room_messages', handleRoomMessages);
+        socket.on('room_users', handleRoomUsers);
+        socket.on('new_message', handleNewMessage);
+        socket.on('new_dm', handleNewDM);
+        socket.on('dm_messages', handleDMMessages);
+        socket.on('dm_conversations', handleDMConversations);
+        socket.on('user_typing', handleUserTyping);
+        socket.on('user_stopped_typing', handleUserStoppedTyping);
+
+        // Enhanced status handling events
         socket.on('user_status_changed', (data) => {
-            try { handleUserStatusChanged(data); } catch (e) { console.error('user_status_changed error:', e); }
-        });
-        socket.on('user_typing', (data) => {
-            try { handleUserTyping(data); } catch (e) { console.error('user_typing error:', e); }
-        });
-        socket.on('user_stopped_typing', (data) => {
-            try { handleUserStoppedTyping(data); } catch (e) { console.error('user_stopped_typing error:', e); }
-        });
-        socket.on('refresh_dm_conversations', () => {
-            try {
-                loadDMConversations();
-            } catch (e) {
-                console.error('refresh_dm_conversations error:', e);
+            console.log('👤 User status changed:', data);
+            handleUserStatusChanged(data);
+
+            // Update online users map
+            if (data.status === 'online') {
+                onlineUsers.set(data.userId, data);
+            } else {
+                onlineUsers.delete(data.userId);
             }
+        });
+
+        socket.on('online_users', (users) => {
+            console.log('📊 Received online users update:', users.length);
+            onlineUsers.clear();
+            users.forEach(user => {
+                onlineUsers.set(user.id, user);
+            });
+        });
+
+        // New refresh events
+        socket.on('refresh_friends_status', () => {
+            console.log('🔄 Refreshing friends status');
+            socket.emit('get_friends_list');
+        });
+
+        socket.on('refresh_room_users', () => {
+            console.log('🔄 Refreshing room users');
+            if (currentRoom) {
+                socket.emit('get_room_users', { roomId: currentRoom });
+            }
+        });
+
+        // Real-time friend management events
+        socket.on('friends_list_updated', (data) => {
+            console.log('🔄 Friends list updated via socket:', data.friends.length);
+            displayFriends(data.friends);
+
+            // Refresh the modal if it's open
+            const modal = document.getElementById('friend-requests-modal');
+            if (modal.style.display === 'flex') {
+                loadAllFriendData();
+            }
+        });
+
+        socket.on('friend_requests_count_updated', (data) => {
+            console.log('🔄 Friend requests count updated:', data.count);
+            updateFriendRequestsBadge(data.count);
+        });
+
+        socket.on('room_users_updated', () => {
+            console.log('🔄 Room users update requested');
+            if (currentRoom) {
+                socket.emit('get_room_users', { roomId: currentRoom });
+            }
+        });
+
+        // Friend notification events
+        socket.on('friend_request_received', (data) => {
+            console.log('📬 Friend request received:', data);
+            showNotification(data.message, 'info');
+        });
+
+        socket.on('friend_request_accepted', (data) => {
+            console.log('✅ Friend request accepted:', data);
+            showNotification(data.message, 'success');
+        });
+
+        socket.on('friend_removed', (data) => {
+            console.log('❌ Friend removed:', data);
+            showNotification(data.message, 'warning');
+        });
+
+        // Message deletion events
+        socket.on('message_deleted', (data) => {
+            console.log('🗑️ Message deleted:', data);
+            showNotification(`Message deleted by ${data.deletedBy}`, 'info');
+        });
+
+        socket.on('conversation_deleted', (data) => {
+            console.log('🗑️ Conversation deleted:', data);
+            showNotification(`${data.deletedBy} deleted ${data.messageCount} messages from your conversation`, 'warning');
+        });
+
+        socket.on('refresh_dm_messages', (data) => {
+            console.log('🔄 Refreshing DM messages:', data);
+            if (currentDMRecipientId == data.userId) {
+                socket.emit('get_dm_messages', { recipientId: data.userId, limit: 50, offset: 0 });
+            }
+        });
+
+        socket.on('refresh_dm_conversations', () => {
+            console.log('🔄 Refreshing DM conversations');
+            socket.emit('get_dm_conversations');
         });
 
         console.log('✅ Enhanced socket event handlers initialized');
@@ -952,13 +1296,26 @@ function initializeSocket() {
     }
 }
 
-// Update connection status indicator
+// Enhanced connection status indicator
 function updateConnectionStatus(status) {
     const statusEl = document.getElementById('connection-status');
     if (statusEl) {
         statusEl.className = `connection-status ${status}`;
-        statusEl.textContent = status === 'connected' ? 'Connected' : 'Disconnected';
-        statusEl.style.display = status === 'connected' ? 'none' : 'block';
+
+        switch (status) {
+            case 'connected':
+                statusEl.textContent = 'Connected';
+                statusEl.style.display = 'none';
+                break;
+            case 'connecting':
+                statusEl.textContent = 'Reconnecting...';
+                statusEl.style.display = 'block';
+                break;
+            case 'disconnected':
+                statusEl.textContent = 'Disconnected';
+                statusEl.style.display = 'block';
+                break;
+        }
 
         if (status === 'connected') {
             setTimeout(() => {
@@ -1007,7 +1364,7 @@ function handleRoomMessages(data) {
     displayMessages(messages);
 }
 
-// Handle room users list with enhanced friend management
+// Handle room users list with enhanced friend management and status display
 function handleRoomUsers(data) {
     console.log('📊 Room users received:', data);
     const { roomId, users } = data;
@@ -1026,7 +1383,7 @@ function handleRoomUsers(data) {
     updateCurrentRoomUsers();
 }
 
-// Update current room users display with enhanced friend management
+// Update current room users display with enhanced friend management and status
 async function updateCurrentRoomUsers() {
     const currentRoomUsersSection = document.getElementById('current-room-users-section');
     const currentRoomUsersList = document.getElementById('current-room-users');
@@ -1047,6 +1404,9 @@ async function updateCurrentRoomUsers() {
     const users = Array.from(roomUsers.values()).sort((a, b) => {
         if (a.username === currentUser.username) return -1;
         if (b.username === currentUser.username) return 1;
+        // Sort by status (online first) then by name
+        if (a.status === 'online' && b.status !== 'online') return -1;
+        if (b.status === 'online' && a.status !== 'online') return 1;
         return a.username.localeCompare(b.username);
     });
 
@@ -1076,6 +1436,7 @@ async function updateCurrentRoomUsers() {
             let statusBadge = '';
             let friendButton = '';
 
+            // Friend status badge
             if (isFriend) {
                 statusBadge = '<span class="friend-status-badge is-friend">★</span>';
                 friendButton = '';
@@ -1092,8 +1453,13 @@ async function updateCurrentRoomUsers() {
                 friendButton = `<button class="btn-add-friend btn-small" onclick="sendFriendRequest(${user.id}, '${user.username}')">+ Friend</button>`;
             }
 
+            // Online status indicator
+            const statusClass = user.status === 'online' ? 'online' :
+                user.status === 'away' ? 'away' : 'offline';
+
             li.innerHTML = `
                 <div class="channel-user-info">
+                    <span class="user-status ${statusClass}"></span>
                     ${statusBadge}
                     <span class="room-user">${user.username}</span>
                 </div>
@@ -1113,7 +1479,7 @@ async function updateCurrentRoomUsers() {
     });
 }
 
-// Handle DM conversations list
+// Handle DM conversations list with enhanced status display
 function handleDMConversations(conversations) {
     console.log('💬 DM conversations received:', conversations);
     const dmList = document.getElementById('dm-list');
@@ -1138,11 +1504,16 @@ function handleDMConversations(conversations) {
         li.dataset.username = otherUser.username;
         li.dataset.conversationId = conv.id;
 
+        const statusClass = otherUser.status === 'online' ? 'online' :
+            otherUser.status === 'away' ? 'away' : 'offline';
+
         li.innerHTML = `
+            <span class="user-status ${statusClass}"></span>
             <span class="dm-conversation-name">${otherUser.username}</span>
             <div class="dm-conversation-actions">
+                <button class="dm-action-btn" title="Clear Messages" onclick="deleteAllDMMessages('me')">🗑️</button>
                 <button class="dm-action-btn" title="Close">👁️‍🗨️</button>
-                <button class="dm-action-btn" title="Delete">🗑️</button>
+                <button class="dm-action-btn" title="Delete">❌</button>
             </div>
         `;
 
@@ -1218,7 +1589,7 @@ function handleNewDM(message) {
     } else {
         const senderName = message.username || message.display_name;
         showNotification(`New message from ${senderName}`, 'info');
-        loadDMConversations(); // Refresh conversations list
+        socket.emit('get_dm_conversations'); // Refresh conversations list via socket
     }
 }
 
@@ -1231,6 +1602,7 @@ function joinRoom(roomId, roomName) {
 
     document.getElementById('chat-title').textContent = roomName;
     document.getElementById('leave-channel-btn').style.display = 'inline-block';
+    document.getElementById('clear-dm-messages-btn').style.display = 'none';
 
     const messagesContainer = document.getElementById('chat-messages');
     messagesContainer.innerHTML = '<div class="loading">Joining channel...</div>';
@@ -1276,6 +1648,7 @@ function startDM(username, userId, conversationId = null) {
 
     document.getElementById('chat-title').textContent = `💬 Private Message: ${username}`;
     document.getElementById('leave-channel-btn').style.display = 'none';
+    document.getElementById('clear-dm-messages-btn').style.display = 'inline-block';
     document.getElementById('current-room-users-section').style.display = 'none';
 
     document.querySelectorAll('#rooms-list li').forEach(li => {
@@ -1329,6 +1702,7 @@ async function leaveCurrentChannel() {
 
         document.getElementById('chat-title').textContent = '📺 Select a channel to join';
         document.getElementById('leave-channel-btn').style.display = 'none';
+        document.getElementById('clear-dm-messages-btn').style.display = 'none';
         document.getElementById('current-room-users-section').style.display = 'none';
 
         document.querySelectorAll('#rooms-list li').forEach(li => {
@@ -1372,12 +1746,13 @@ function displayMessages(messages) {
     scrollToBottom();
 }
 
-// Append a single message in IRC style
+// Append a single message in IRC style with context menu support
 function appendMessage(message, scroll = true) {
     const messagesContainer = document.getElementById('chat-messages');
 
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message';
+    messageDiv.dataset.messageId = message.id;
 
     if (message.sender_id === currentUser?.id) {
         messageDiv.classList.add('own');
@@ -1394,6 +1769,14 @@ function appendMessage(message, scroll = true) {
             <span class="message-content">${content}</span>
         </div>
     `;
+
+    // Add right-click context menu for DM messages
+    if (currentDMRecipient && !currentRoom) {
+        messageDiv.addEventListener('contextmenu', (e) => {
+            showMessageContextMenu(e, messageDiv);
+        });
+        messageDiv.style.cursor = 'context-menu';
+    }
 
     messagesContainer.appendChild(messageDiv);
 
@@ -1480,20 +1863,40 @@ function sendMessage(event) {
     messageInput.value = '';
 }
 
-// Handle user status changes
+// Enhanced user status change handling
 function handleUserStatusChanged(data) {
-    const { username, status } = data;
+    const { userId, username, displayName, status } = data;
 
-    if (status === 'online') {
-        addSystemMessage(`${username} has joined the server`);
-    } else if (status === 'offline') {
-        addSystemMessage(`${username} has left the server`);
+    console.log(`👤 Status update: ${username} is now ${status}`);
+
+    // Update friends list if this user is a friend
+    if (friends.has(username)) {
+        const friend = friends.get(username);
+        friend.status = status;
+        friends.set(username, friend);
+
+        // Refresh friends display
+        socket.emit('get_friends_list');
     }
 
-    // Update friends list to reflect status changes
-    loadFriends();
+    // Update room users if this user is in current room
+    if (roomUsers.has(username)) {
+        const user = roomUsers.get(username);
+        user.status = status;
+        roomUsers.set(username, user);
+        updateCurrentRoomUsers();
+    }
 
-    console.log(`User ${username} is now ${status}`);
+    // Update DM conversations display
+    socket.emit('get_dm_conversations');
+
+    // Show system message for status changes
+    if (status === 'online') {
+        addSystemMessage(`${displayName || username} has come online`);
+        showNotification(`${displayName || username} is now online`, 'success');
+    } else if (status === 'offline') {
+        addSystemMessage(`${displayName || username} has gone offline`);
+    }
 }
 
 // Handle typing indicators
@@ -1645,12 +2048,21 @@ function showNotification(message, type = 'info') {
     }, 3000);
 }
 
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    stopStatusRefresh();
+    if (socket) {
+        socket.disconnect();
+    }
+});
+
 // Make friend management functions available globally for inline onclick handlers
 window.sendFriendRequest = sendFriendRequest;
 window.acceptFriendRequest = acceptFriendRequest;
 window.rejectFriendRequest = rejectFriendRequest;
 window.cancelFriendRequest = cancelFriendRequest;
 window.removeFriend = removeFriend;
+window.deleteAllDMMessages = deleteAllDMMessages;
 
 // Make functions available globally for debugging
 window.testDM = () => {
@@ -1662,10 +2074,10 @@ window.testDM = () => {
         currentDMRecipientId,
         currentConversationId,
         friends: Array.from(friends.keys()),
-        roomUsers: Array.from(roomUsers.keys())
+        roomUsers: Array.from(roomUsers.keys()),
+        onlineUsers: Array.from(onlineUsers.keys())
     });
 };
 
-window.loadFriends = loadFriends;
-window.loadDMConversations = loadDMConversations;
 window.startDM = startDM;
+window.refreshAllData = refreshAllData;

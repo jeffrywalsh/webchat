@@ -1,4 +1,4 @@
-// server.js - Main chat server file
+// server.js - Main chat server file with enhanced real-time friend management and message deletion
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -17,9 +17,9 @@ const socketHandlers = require('./socket/handlers');
 // Import routes
 const authRoutes = require('./routes/auth');
 const roomRoutes = require('./routes/rooms');
-const messageRoutes = require('./routes/messages');
+const { router: messageRoutes, setSocketIO: setMessageSocketIO } = require('./routes/messages'); // Enhanced messages routes
 const uploadRoutes = require('./routes/upload');
-const friendsRoutes = require('./routes/friends');
+const { router: friendsRoutes, setSocketIO: setFriendsSocketIO } = require('./routes/friends'); // Import with setSocketIO function
 const conversationsRoutes = require('./routes/conversations');
 
 // Import middleware
@@ -64,6 +64,10 @@ app.use(sessionConfig);
 
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Pass socket.io instance to routes for real-time updates
+setFriendsSocketIO(io);
+setMessageSocketIO(io);
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -165,6 +169,8 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Chat server running on http://localhost:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log('✅ Real-time friend management enabled');
+    console.log('✅ Real-time message deletion enabled');
 });
 
 module.exports = { app, server, io };

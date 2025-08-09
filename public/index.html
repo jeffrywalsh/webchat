@@ -75,7 +75,10 @@
         <div class="chat-header">
             <div class="chat-header-content">
                 <h2 id="chat-title">Select a channel to start chatting</h2>
-                <button id="leave-channel-btn" class="btn btn-small btn-leave" style="display: none;">Leave</button>
+                <div class="chat-header-actions">
+                    <button id="clear-dm-messages-btn" class="btn btn-small" style="display: none;" onclick="deleteAllDMMessages('me')" title="Clear Messages">🗑️</button>
+                    <button id="leave-channel-btn" class="btn btn-small btn-leave" style="display: none;">Leave</button>
+                </div>
             </div>
             <div id="typing-indicator" class="typing-indicator" style="display: none;">
                 Someone is typing...
@@ -144,13 +147,33 @@
         <span class="context-icon">👁️‍🗨️</span>
         <span>Close Conversation</span>
     </div>
-    <div class="context-menu-item" data-action="delete">
+    <div class="context-menu-item" data-action="clear-messages">
         <span class="context-icon">🗑️</span>
+        <span>Clear Messages</span>
+    </div>
+    <div class="context-menu-item" data-action="delete">
+        <span class="context-icon">❌</span>
         <span>Delete Conversation</span>
     </div>
     <div class="context-menu-item" data-action="view-profile">
         <span class="context-icon">👤</span>
         <span>View Profile</span>
+    </div>
+</div>
+
+<!-- Message Context Menu (for individual messages) -->
+<div id="message-context-menu" class="context-menu" style="display: none;">
+    <div class="context-menu-item" data-action="delete-for-me">
+        <span class="context-icon">🗑️</span>
+        <span>Delete for me</span>
+    </div>
+    <div class="context-menu-item" data-action="delete-for-everyone">
+        <span class="context-icon">❌</span>
+        <span>Delete for everyone</span>
+    </div>
+    <div class="context-menu-item" data-action="copy-message">
+        <span class="context-icon">📋</span>
+        <span>Copy message</span>
     </div>
 </div>
 
@@ -217,5 +240,132 @@
 <script src="/js/auth.js"></script>
 <script src="/js/socket.js"></script>
 <script src="/js/chat.js"></script>
+
+<style>
+    /* Additional styles for message deletion features */
+    .chat-header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .chat-header-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .message:hover {
+        background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    .context-menu {
+        background: #2c2c2c;
+        border: 1px solid #444;
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        min-width: 160px;
+        max-width: 200px;
+    }
+
+    .context-menu-item {
+        padding: 10px 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #ccc;
+        font-size: 12px;
+        transition: background-color 0.2s;
+        border-bottom: 1px solid #333;
+    }
+
+    .context-menu-item:last-child {
+        border-bottom: none;
+    }
+
+    .context-menu-item:hover {
+        background-color: #333;
+        color: #fff;
+    }
+
+    .context-menu-item:first-child {
+        border-radius: 6px 6px 0 0;
+    }
+
+    .context-menu-item:last-child {
+        border-radius: 0 0 6px 6px;
+    }
+
+    .context-icon {
+        font-size: 12px;
+        width: 16px;
+        text-align: center;
+    }
+
+    /* Message deletion animation */
+    .message.deleted {
+        opacity: 0.5;
+        transition: opacity 0.3s ease;
+    }
+
+    .message.deleted .message-content {
+        font-style: italic;
+        color: #666;
+    }
+
+    /* Enhanced DM action buttons */
+    .dm-conversation-actions {
+        opacity: 0;
+        transition: opacity 0.2s ease;
+    }
+
+    .dm-conversation:hover .dm-conversation-actions {
+        opacity: 1;
+    }
+
+    .dm-action-btn {
+        background: #444;
+        border: 1px solid #666;
+        color: #ccc;
+        padding: 2px 4px;
+        font-size: 10px;
+        border-radius: 2px;
+        cursor: pointer;
+        margin-left: 2px;
+        min-width: 18px;
+        text-align: center;
+        transition: all 0.2s ease;
+    }
+
+    .dm-action-btn:hover {
+        background: #555;
+        color: #fff;
+        transform: scale(1.1);
+    }
+
+    .dm-action-btn[title="Clear Messages"] {
+        color: #ff9999;
+        border-color: #aa4444;
+    }
+
+    .dm-action-btn[title="Clear Messages"]:hover {
+        background: #aa4444;
+        color: #fff;
+    }
+
+    /* Clear DM messages button in chat header */
+    #clear-dm-messages-btn {
+        background-color: #440000;
+        color: #ff9999;
+        border: 1px solid #660000;
+    }
+
+    #clear-dm-messages-btn:hover {
+        background-color: #660000;
+        color: #ffaaaa;
+    }
+</style>
 </body>
 </html>

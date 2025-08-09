@@ -1,8 +1,90 @@
-// routes/friends.js - Friend management routes
+// routes/friends.js - Enhanced Friend management routes with real-time updates
 const express = require('express');
 const { query, queryOne } = require('../config/database');
 
 const router = express.Router();
+
+// Helper to get socket.io instance - will be set by server.js
+let io = null;
+function setSocketIO(socketIO) {
+    io = socketIO;
+}
+
+// Helper to notify users via socket
+function notifyUserViaSocket(userId, event, data) {
+    if (!io) return;
+
+    // Find the user's socket connection
+    const userSockets = io.sockets.sockets;
+    for (const [socketId, socket] of userSockets) {
+        if (socket.request?.session?.userId == userId) {
+            socket.emit(event, data);
+            break;
+        }
+    }
+}
+
+// Helper to update friends list for multiple users
+async function updateFriendsListForUsers(userIds) {
+    if (!io) return;
+
+    for (const targetUserId of userIds) {
+        try {
+            // Get updated friends list
+            const friends = await query(`
+                SELECT
+                    f.id as friendship_id,
+                    f.created_at as friends_since,
+                    CASE
+                        WHEN f.requester_id = ? THEN f.addressee_id
+                        ELSE f.requester_id
+                        END as friend_id,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.username
+                        ELSE u1.username
+                        END as username,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.display_name
+                        ELSE u1.display_name
+                        END as display_name,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.avatar_url
+                        ELSE u1.avatar_url
+                        END as avatar_url,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.status
+                        ELSE u1.status
+                        END as status
+                FROM friends f
+                         JOIN users u1 ON f.requester_id = u1.id
+                         JOIN users u2 ON f.addressee_id = u2.id
+                WHERE (f.requester_id = ? OR f.addressee_id = ?)
+                  AND f.status = 'accepted'
+                  AND u1.is_active = TRUE
+                  AND u2.is_active = TRUE
+                ORDER BY status DESC, display_name ASC
+            `, [targetUserId, targetUserId, targetUserId, targetUserId, targetUserId, targetUserId, targetUserId]);
+
+            // Get updated friend requests count
+            const result = await queryOne(`
+                SELECT COUNT(*) as count
+                FROM friends f
+                         JOIN users u ON f.requester_id = u.id
+                WHERE f.addressee_id = ?
+                  AND f.status = 'pending'
+                  AND u.is_active = TRUE
+            `, [targetUserId]);
+
+            // Emit updates to the user
+            notifyUserViaSocket(targetUserId, 'friends_list_updated', { friends });
+            notifyUserViaSocket(targetUserId, 'friend_requests_count_updated', { count: result.count });
+            notifyUserViaSocket(targetUserId, 'room_users_updated', {}); // Trigger room users refresh
+
+        } catch (error) {
+            console.error('Error updating friends list for user:', targetUserId, error);
+        }
+    }
+}
 
 // Get user's friends list
 router.get('/', async (req, res) => {
@@ -164,6 +246,21 @@ router.post('/request/:userId', async (req, res) => {
             );
         }
 
+        // Get requester info for notification
+        const requester = await queryOne(
+            'SELECT username, display_name FROM users WHERE id = ?',
+            [userId]
+        );
+
+        // Send real-time updates to both users
+        await updateFriendsListForUsers([userId, targetUserId]);
+
+        // Notify target user about new friend request
+        notifyUserViaSocket(targetUserId, 'friend_request_received', {
+            from: requester,
+            message: `${requester.display_name} sent you a friend request`
+        });
+
         res.json({
             message: `Friend request sent to ${targetUser.display_name}`,
             user: targetUser
@@ -198,6 +295,21 @@ router.put('/accept/:friendshipId', async (req, res) => {
             'UPDATE friends SET status = "accepted", updated_at = CURRENT_TIMESTAMP WHERE id = ?',
             [friendshipId]
         );
+
+        // Get accepter info for notification
+        const accepter = await queryOne(
+            'SELECT username, display_name FROM users WHERE id = ?',
+            [userId]
+        );
+
+        // Send real-time updates to both users
+        await updateFriendsListForUsers([userId, friendship.requester_id]);
+
+        // Notify requester that their request was accepted
+        notifyUserViaSocket(friendship.requester_id, 'friend_request_accepted', {
+            by: accepter,
+            message: `${accepter.display_name} accepted your friend request`
+        });
 
         res.json({
             message: `You are now friends with ${friendship.display_name}`,
@@ -239,6 +351,9 @@ router.put('/reject/:friendshipId', async (req, res) => {
             [friendshipId]
         );
 
+        // Send real-time updates to both users
+        await updateFriendsListForUsers([userId, friendship.requester_id]);
+
         res.json({
             message: `Friend request from ${friendship.display_name} rejected`
         });
@@ -277,8 +392,27 @@ router.delete('/:friendshipId', async (req, res) => {
         const friendName = friendship.requester_id === userId ?
             friendship.addressee_name : friendship.requester_name;
 
+        const otherUserId = friendship.requester_id === userId ?
+            friendship.addressee_id : friendship.requester_id;
+
         const actionMessage = friendship.status === 'pending' ?
             'Friend request cancelled' : `Removed ${friendName} from friends`;
+
+        // Send real-time updates to both users
+        await updateFriendsListForUsers([userId, otherUserId]);
+
+        // If it was an accepted friendship being removed, notify the other user
+        if (friendship.status === 'accepted') {
+            const remover = await queryOne(
+                'SELECT display_name FROM users WHERE id = ?',
+                [userId]
+            );
+
+            notifyUserViaSocket(otherUserId, 'friend_removed', {
+                by: remover,
+                message: `${remover.display_name} removed you from their friends list`
+            });
+        }
 
         res.json({ message: actionMessage });
 
@@ -336,4 +470,4 @@ router.get('/status/:userId', async (req, res) => {
     }
 });
 
-module.exports = router;
+module.exports = { router, setSocketIO };

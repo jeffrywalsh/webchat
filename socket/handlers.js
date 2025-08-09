@@ -1,8 +1,9 @@
-// socket/handlers.js - Enhanced Socket.io event handlers
+// socket/handlers.js - Enhanced Socket.io event handlers with robust online status management
 const { userQueries, roomQueries, messageQueries, queryOne, query } = require('../config/database');
 
-// Store connected users
+// Store connected users with more detailed tracking
 const connectedUsers = new Map();
+const userSessions = new Map(); // Track multiple sessions per user
 
 function socketHandlers(io, socket) {
     const userId = socket.request.session.userId;
@@ -10,19 +11,61 @@ function socketHandlers(io, socket) {
 
     console.log('🔧 Initializing enhanced handlers for:', { userId, username });
 
-    // Store connected users
-    connectedUsers.set(userId, {
+    // Store connected users with session tracking
+    const sessionData = {
         socketId: socket.id,
         username,
-        joinedAt: new Date()
-    });
+        joinedAt: new Date(),
+        lastSeen: new Date()
+    };
+
+    connectedUsers.set(userId, sessionData);
+
+    // Track multiple sessions per user
+    if (!userSessions.has(userId)) {
+        userSessions.set(userId, new Set());
+    }
+    userSessions.get(userId).add(socket.id);
 
     console.log(`👤 User connected: ${username} (${socket.id})`);
+    console.log(`📊 Active sessions for ${username}: ${userSessions.get(userId).size}`);
 
-    // Join user to their rooms on connection
+    // Enhanced status broadcasting
+    async function broadcastStatusUpdate(targetUserId, status) {
+        try {
+            const user = await userQueries.findById(targetUserId);
+            if (!user) return;
+
+            console.log(`📡 Broadcasting status update: ${user.username} is now ${status}`);
+
+            // Broadcast to all connected sockets
+            io.emit('user_status_changed', {
+                userId: targetUserId,
+                username: user.username,
+                displayName: user.display_name,
+                status: status
+            });
+
+            // Trigger friends list updates for all users
+            io.emit('refresh_friends_status');
+
+            // Update room users for all rooms this user is in
+            const userRooms = await roomQueries.getUserRooms(targetUserId);
+            for (const room of userRooms) {
+                io.to(`room_${room.id}`).emit('refresh_room_users');
+            }
+
+        } catch (error) {
+            console.error('Error broadcasting status update:', error);
+        }
+    }
+
+    // Enhanced user initialization with better status handling
     async function initializeUser() {
         try {
+            // Update status to online in database
             await userQueries.updateStatus(userId, 'online');
+            console.log(`✅ Updated ${username} status to online in database`);
 
             // Get user's rooms and join them
             const userRooms = await roomQueries.getUserRooms(userId);
@@ -37,18 +80,19 @@ function socketHandlers(io, socket) {
             // Send DM conversations
             await sendDMConversations();
 
-            // Get and send all online users
+            // Send initial friends list
+            await sendFriendsList();
+
+            // Send pending friend requests count
+            await sendFriendRequestsCount();
+
+            // Broadcast that user is online to everyone
+            await broadcastStatusUpdate(userId, 'online');
+
+            // Send updated online users to this user
             await sendOnlineUsers();
 
-            // Notify others user is online
-            socket.broadcast.emit('user_status_changed', {
-                userId,
-                username,
-                status: 'online'
-            });
-
-            // Update online users for everyone else
-            io.emit('refresh_online_users');
+            console.log(`🎉 ${username} fully initialized and status broadcasted`);
 
         } catch (error) {
             console.error('User initialization error:', error);
@@ -56,17 +100,83 @@ function socketHandlers(io, socket) {
         }
     }
 
-    // Send online users list
+    // Send friends list to user
+    async function sendFriendsList() {
+        try {
+            const friends = await query(`
+                SELECT
+                    f.id as friendship_id,
+                    f.created_at as friends_since,
+                    CASE
+                        WHEN f.requester_id = ? THEN f.addressee_id
+                        ELSE f.requester_id
+                        END as friend_id,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.username
+                        ELSE u1.username
+                        END as username,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.display_name
+                        ELSE u1.display_name
+                        END as display_name,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.avatar_url
+                        ELSE u1.avatar_url
+                        END as avatar_url,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.status
+                        ELSE u1.status
+                        END as status,
+                    CASE
+                        WHEN f.requester_id = ? THEN u2.last_seen
+                        ELSE u1.last_seen
+                        END as last_seen
+                FROM friends f
+                         JOIN users u1 ON f.requester_id = u1.id
+                         JOIN users u2 ON f.addressee_id = u2.id
+                WHERE (f.requester_id = ? OR f.addressee_id = ?)
+                  AND f.status = 'accepted'
+                  AND u1.is_active = TRUE
+                  AND u2.is_active = TRUE
+                ORDER BY status DESC, display_name ASC
+            `, [userId, userId, userId, userId, userId, userId, userId, userId]);
+
+            socket.emit('friends_list_updated', { friends });
+        } catch (error) {
+            console.error('Error fetching friends list:', error);
+        }
+    }
+
+    // Send friend requests count
+    async function sendFriendRequestsCount() {
+        try {
+            const result = await queryOne(`
+                SELECT COUNT(*) as count
+                FROM friends f
+                         JOIN users u ON f.requester_id = u.id
+                WHERE f.addressee_id = ?
+                  AND f.status = 'pending'
+                  AND u.is_active = TRUE
+            `, [userId]);
+
+            socket.emit('friend_requests_count_updated', { count: result.count });
+        } catch (error) {
+            console.error('Error fetching friend requests count:', error);
+        }
+    }
+
+    // Enhanced online users with real-time status
     async function sendOnlineUsers() {
         try {
             const onlineUsers = await query(`
-                SELECT id, username, display_name, avatar_url, status
+                SELECT id, username, display_name, avatar_url, status, last_seen
                 FROM users
                 WHERE status = 'online' AND is_active = TRUE
-                ORDER BY username
+                ORDER BY display_name
             `);
 
             socket.emit('online_users', onlineUsers);
+            console.log(`📤 Sent ${onlineUsers.length} online users to ${username}`);
         } catch (error) {
             console.error('Error fetching online users:', error);
         }
@@ -132,6 +242,76 @@ function socketHandlers(io, socket) {
         }));
     }
 
+    // Notify user about friend-related events
+    function notifyUser(targetUserId, event, data) {
+        const targetConnection = Array.from(connectedUsers.entries())
+            .find(([id, connection]) => id == targetUserId);
+
+        if (targetConnection) {
+            const targetSocketId = targetConnection[1].socketId;
+            io.to(targetSocketId).emit(event, data);
+        }
+    }
+
+    // Update friends list for multiple users
+    async function updateFriendsForUsers(userIds) {
+        for (const targetUserId of userIds) {
+            const targetConnection = Array.from(connectedUsers.entries())
+                .find(([id, connection]) => id == targetUserId);
+
+            if (targetConnection) {
+                const targetSocketId = targetConnection[1].socketId;
+                const friends = await query(`
+                    SELECT
+                        f.id as friendship_id,
+                        f.created_at as friends_since,
+                        CASE
+                            WHEN f.requester_id = ? THEN f.addressee_id
+                            ELSE f.requester_id
+                            END as friend_id,
+                        CASE
+                            WHEN f.requester_id = ? THEN u2.username
+                            ELSE u1.username
+                            END as username,
+                        CASE
+                            WHEN f.requester_id = ? THEN u2.display_name
+                            ELSE u1.display_name
+                            END as display_name,
+                        CASE
+                            WHEN f.requester_id = ? THEN u2.avatar_url
+                            ELSE u1.avatar_url
+                            END as avatar_url,
+                        CASE
+                            WHEN f.requester_id = ? THEN u2.status
+                            ELSE u1.status
+                            END as status
+                    FROM friends f
+                             JOIN users u1 ON f.requester_id = u1.id
+                             JOIN users u2 ON f.addressee_id = u2.id
+                    WHERE (f.requester_id = ? OR f.addressee_id = ?)
+                      AND f.status = 'accepted'
+                      AND u1.is_active = TRUE
+                      AND u2.is_active = TRUE
+                    ORDER BY status DESC, display_name ASC
+                `, [targetUserId, targetUserId, targetUserId, targetUserId, targetUserId, targetUserId, targetUserId]);
+
+                io.to(targetSocketId).emit('friends_list_updated', { friends });
+
+                // Update friend requests count
+                const result = await queryOne(`
+                    SELECT COUNT(*) as count
+                    FROM friends f
+                             JOIN users u ON f.requester_id = u.id
+                    WHERE f.addressee_id = ?
+                      AND f.status = 'pending'
+                      AND u.is_active = TRUE
+                `, [targetUserId]);
+
+                io.to(targetSocketId).emit('friend_requests_count_updated', { count: result.count });
+            }
+        }
+    }
+
     // Handle joining a specific room
     socket.on('join_room', async (data) => {
         try {
@@ -157,9 +337,9 @@ function socketHandlers(io, socket) {
                 messages: messages.reverse()
             });
 
-            // Send room users when joining
+            // Send room users when joining with updated status
             const roomUsers = await query(`
-                SELECT u.id, u.username, u.display_name, u.avatar_url, u.status, rm.role
+                SELECT u.id, u.username, u.display_name, u.avatar_url, u.status, rm.role, u.last_seen
                 FROM users u
                          JOIN room_members rm ON u.id = rm.user_id
                 WHERE rm.room_id = ? AND rm.is_active = TRUE AND u.is_active = TRUE
@@ -169,6 +349,7 @@ function socketHandlers(io, socket) {
                         WHEN 'admin' THEN 2
                         ELSE 3
                         END,
+                    u.status DESC,
                     u.username
             `, [roomId]);
 
@@ -185,7 +366,7 @@ function socketHandlers(io, socket) {
         }
     });
 
-    // ENHANCED: Handle leaving a room with proper cleanup and rooms list refresh
+    // Handle leaving a room with proper cleanup and rooms list refresh
     socket.on('leave_room', async (data) => {
         try {
             const { roomId } = data;
@@ -206,7 +387,7 @@ function socketHandlers(io, socket) {
         }
     });
 
-    // NEW: Handle explicit request for user rooms (for refresh after joining new channels)
+    // Handle explicit request for user rooms
     socket.on('get_user_rooms', async () => {
         try {
             const userRooms = await roomQueries.getUserRooms(userId);
@@ -218,7 +399,7 @@ function socketHandlers(io, socket) {
         }
     });
 
-    // Handle getting room users
+    // Handle getting room users with force refresh capability
     socket.on('get_room_users', async (data) => {
         try {
             const { roomId } = data;
@@ -234,9 +415,9 @@ function socketHandlers(io, socket) {
                 return;
             }
 
-            // Get users in this room
+            // Get users in this room with fresh status data
             const roomUsers = await query(`
-                SELECT u.id, u.username, u.display_name, u.avatar_url, u.status, rm.role
+                SELECT u.id, u.username, u.display_name, u.avatar_url, u.status, rm.role, u.last_seen
                 FROM users u
                          JOIN room_members rm ON u.id = rm.user_id
                 WHERE rm.room_id = ? AND rm.is_active = TRUE AND u.is_active = TRUE
@@ -246,6 +427,7 @@ function socketHandlers(io, socket) {
                         WHEN 'admin' THEN 2
                         ELSE 3
                         END,
+                    u.status DESC,
                     u.username
             `, [roomId]);
 
@@ -254,7 +436,7 @@ function socketHandlers(io, socket) {
                 users: roomUsers
             });
 
-            console.log(`📝 Sent room users for room ${roomId} to ${username}`);
+            console.log(`📝 Sent room users for room ${roomId} to ${username} (${roomUsers.length} users)`);
 
         } catch (error) {
             console.error('Get room users error:', error);
@@ -262,7 +444,7 @@ function socketHandlers(io, socket) {
         }
     });
 
-    // Handle getting online users
+    // Handle getting online users with force refresh
     socket.on('get_online_users', async () => {
         try {
             await sendOnlineUsers();
@@ -279,6 +461,39 @@ function socketHandlers(io, socket) {
         } catch (error) {
             console.error('Get DM conversations error:', error);
             socket.emit('error', 'Failed to get DM conversations');
+        }
+    });
+
+    // Handle getting friends list
+    socket.on('get_friends_list', async () => {
+        try {
+            await sendFriendsList();
+        } catch (error) {
+            console.error('Get friends list error:', error);
+            socket.emit('error', 'Failed to get friends list');
+        }
+    });
+
+    // Handle getting friend requests count
+    socket.on('get_friend_requests_count', async () => {
+        try {
+            await sendFriendRequestsCount();
+        } catch (error) {
+            console.error('Get friend requests count error:', error);
+            socket.emit('error', 'Failed to get friend requests count');
+        }
+    });
+
+    // NEW: Handle manual status refresh request
+    socket.on('refresh_my_status', async () => {
+        try {
+            console.log(`🔄 Manual status refresh requested by ${username}`);
+            await userQueries.updateStatus(userId, 'online');
+            await broadcastStatusUpdate(userId, 'online');
+            await sendOnlineUsers();
+            await sendFriendsList();
+        } catch (error) {
+            console.error('Manual status refresh error:', error);
         }
     });
 
@@ -556,30 +771,32 @@ function socketHandlers(io, socket) {
         }
     });
 
-    // Handle user disconnect
-    socket.on('disconnect', async () => {
-        console.log(`👋 User disconnected: ${username} (${socket.id})`);
+    // Enhanced disconnect handling with proper cleanup
+    socket.on('disconnect', async (reason) => {
+        console.log(`👋 User disconnecting: ${username} (${socket.id}) - Reason: ${reason}`);
 
         try {
-            // Remove from connected users
-            connectedUsers.delete(userId);
+            // Remove this socket from user sessions
+            if (userSessions.has(userId)) {
+                userSessions.get(userId).delete(socket.id);
+                console.log(`📊 Remaining sessions for ${username}: ${userSessions.get(userId).size}`);
 
-            // Update status to offline if no other connections
-            const stillConnected = Array.from(connectedUsers.entries())
-                .some(([id]) => id == userId);
+                // If no more sessions for this user, mark as offline
+                if (userSessions.get(userId).size === 0) {
+                    userSessions.delete(userId);
+                    connectedUsers.delete(userId);
 
-            if (!stillConnected) {
-                await userQueries.updateStatus(userId, 'offline');
+                    console.log(`🔴 ${username} has no more active sessions, marking offline`);
 
-                // Notify others that user is offline
-                socket.broadcast.emit('user_status_changed', {
-                    userId,
-                    username,
-                    status: 'offline'
-                });
+                    // Update status to offline
+                    await userQueries.updateStatus(userId, 'offline');
 
-                // Update online users for everyone
-                io.emit('refresh_online_users');
+                    // Broadcast offline status to everyone
+                    await broadcastStatusUpdate(userId, 'offline');
+
+                } else {
+                    console.log(`🟡 ${username} still has active sessions, keeping online`);
+                }
             }
 
         } catch (error) {
@@ -589,6 +806,12 @@ function socketHandlers(io, socket) {
 
     // Initialize the user when they connect
     initializeUser();
+
+    // Expose helper functions for use by other modules
+    socket.updateFriendsForUsers = updateFriendsForUsers;
+    socket.notifyUser = notifyUser;
+    socket.sendFriendRequestsCount = sendFriendRequestsCount;
+    socket.broadcastStatusUpdate = broadcastStatusUpdate;
 }
 
 module.exports = socketHandlers;
