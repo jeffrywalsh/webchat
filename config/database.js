@@ -1,4 +1,4 @@
-// config/database.js - Database connection configuration
+// config/database.js - Database connection configuration with media support
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
@@ -171,7 +171,7 @@ const roomQueries = {
     }
 };
 
-// Message-related database functions
+// Message-related database functions with media support
 const messageQueries = {
     // Get room messages with pagination
     async getRoomMessages(roomId, limit = 50, offset = 0) {
@@ -200,13 +200,49 @@ const messageQueries = {
         );
     },
 
-    // Create new message
+    // Create new message with media support
     async create(messageData) {
-        const { sender_id, room_id, recipient_id, message_type, content, file_url, file_name, file_size, link_title, link_description, link_image } = messageData;
+        const {
+            sender_id,
+            room_id,
+            recipient_id,
+            message_type,
+            content,
+            file_url,
+            file_name,
+            file_size,
+            link_title,
+            link_description,
+            link_image
+        } = messageData;
+
         const result = await query(
-            `INSERT INTO messages (sender_id, room_id, recipient_id, message_type, content, file_url, file_name, file_size, link_title, link_description, link_image)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [sender_id, room_id, recipient_id, message_type, content, file_url, file_name, file_size, link_title, link_description, link_image]
+            `INSERT INTO messages (
+                sender_id,
+                room_id,
+                recipient_id,
+                message_type,
+                content,
+                file_url,
+                file_name,
+                file_size,
+                link_title,
+                link_description,
+                link_image
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                sender_id,
+                room_id,
+                recipient_id,
+                message_type,
+                content,
+                file_url,
+                file_name,
+                file_size,
+                link_title,
+                link_description,
+                link_image
+            ]
         );
         return result.insertId;
     }
@@ -217,32 +253,32 @@ const friendQueries = {
     // Get user's friends
     async getFriends(userId) {
         return await query(`
-            SELECT 
+            SELECT
                 f.id as friendship_id,
                 f.created_at as friends_since,
-                CASE 
-                    WHEN f.requester_id = ? THEN f.addressee_id 
-                    ELSE f.requester_id 
-                END as friend_id,
-                CASE 
-                    WHEN f.requester_id = ? THEN u2.username 
-                    ELSE u1.username 
-                END as username,
-                CASE 
-                    WHEN f.requester_id = ? THEN u2.display_name 
-                    ELSE u1.display_name 
-                END as display_name,
-                CASE 
-                    WHEN f.requester_id = ? THEN u2.status 
-                    ELSE u1.status 
-                END as status
+                CASE
+                    WHEN f.requester_id = ? THEN f.addressee_id
+                    ELSE f.requester_id
+                    END as friend_id,
+                CASE
+                    WHEN f.requester_id = ? THEN u2.username
+                    ELSE u1.username
+                    END as username,
+                CASE
+                    WHEN f.requester_id = ? THEN u2.display_name
+                    ELSE u1.display_name
+                    END as display_name,
+                CASE
+                    WHEN f.requester_id = ? THEN u2.status
+                    ELSE u1.status
+                    END as status
             FROM friends f
-            JOIN users u1 ON f.requester_id = u1.id
-            JOIN users u2 ON f.addressee_id = u2.id
-            WHERE (f.requester_id = ? OR f.addressee_id = ?) 
-            AND f.status = 'accepted'
-            AND u1.is_active = TRUE 
-            AND u2.is_active = TRUE
+                     JOIN users u1 ON f.requester_id = u1.id
+                     JOIN users u2 ON f.addressee_id = u2.id
+            WHERE (f.requester_id = ? OR f.addressee_id = ?)
+              AND f.status = 'accepted'
+              AND u1.is_active = TRUE
+              AND u2.is_active = TRUE
             ORDER BY status DESC, display_name ASC
         `, [userId, userId, userId, userId, userId, userId]);
     },
@@ -251,16 +287,16 @@ const friendQueries = {
     async getFriendshipStatus(userId, targetUserId) {
         return await queryOne(`
             SELECT id, status, requester_id, addressee_id
-            FROM friends 
-            WHERE (requester_id = ? AND addressee_id = ?) 
-            OR (requester_id = ? AND addressee_id = ?)
+            FROM friends
+            WHERE (requester_id = ? AND addressee_id = ?)
+               OR (requester_id = ? AND addressee_id = ?)
         `, [userId, targetUserId, targetUserId, userId]);
     },
 
     // Get pending friend requests
     async getPendingRequests(userId) {
         return await query(`
-            SELECT 
+            SELECT
                 f.id as friendship_id,
                 f.created_at,
                 u.id as user_id,
@@ -268,10 +304,10 @@ const friendQueries = {
                 u.display_name,
                 u.avatar_url
             FROM friends f
-            JOIN users u ON f.requester_id = u.id
-            WHERE f.addressee_id = ? 
-            AND f.status = 'pending'
-            AND u.is_active = TRUE
+                     JOIN users u ON f.requester_id = u.id
+            WHERE f.addressee_id = ?
+              AND f.status = 'pending'
+              AND u.is_active = TRUE
             ORDER BY f.created_at DESC
         `, [userId]);
     }
@@ -305,14 +341,14 @@ const conversationQueries = {
                     ELSE u1.status
                     END as other_status
             FROM dm_conversations dc
-            JOIN users u1 ON dc.user1_id = u1.id
-            JOIN users u2 ON dc.user2_id = u2.id
+                     JOIN users u1 ON dc.user1_id = u1.id
+                     JOIN users u2 ON dc.user2_id = u2.id
             WHERE (dc.user1_id = ? OR dc.user2_id = ?)
-            AND dc.is_active = TRUE
-            AND (
+              AND dc.is_active = TRUE
+              AND (
                 (dc.user1_id = ? AND (dc.user1_hidden = FALSE OR dc.user1_hidden IS NULL) AND dc.user1_deleted_at IS NULL) OR
                 (dc.user2_id = ? AND (dc.user2_hidden = FALSE OR dc.user2_hidden IS NULL) AND dc.user2_deleted_at IS NULL)
-            )
+                )
             ORDER BY dc.last_message_at DESC
         `, [userId, userId, userId, userId, userId, userId, userId, userId, userId]);
     },

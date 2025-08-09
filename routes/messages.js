@@ -82,16 +82,16 @@ router.delete('/dm/:messageId', async (req, res) => {
         // Get the message and verify ownership
         const message = await queryOne(`
             SELECT m.*, u.username, u.display_name,
-                   CASE 
-                       WHEN m.sender_id = ? THEN m.recipient_id 
-                       ELSE m.sender_id 
-                   END as other_user_id
+                   CASE
+                       WHEN m.sender_id = ? THEN m.recipient_id
+                       ELSE m.sender_id
+                       END as other_user_id
             FROM messages m
-            JOIN users u ON (CASE WHEN m.sender_id = ? THEN m.recipient_id ELSE m.sender_id END) = u.id
-            WHERE m.id = ? 
-            AND m.room_id IS NULL 
-            AND (m.sender_id = ? OR m.recipient_id = ?)
-            AND m.is_deleted = FALSE
+                     JOIN users u ON (CASE WHEN m.sender_id = ? THEN m.recipient_id ELSE m.sender_id END) = u.id
+            WHERE m.id = ?
+              AND m.room_id IS NULL
+              AND (m.sender_id = ? OR m.recipient_id = ?)
+              AND m.is_deleted = FALSE
         `, [userId, userId, messageId, userId, userId]);
 
         if (!message) {
@@ -161,11 +161,11 @@ router.delete('/dm/conversation/:userId', async (req, res) => {
 
         // Get message count first
         const messageCount = await queryOne(`
-            SELECT COUNT(*) as count 
-            FROM messages 
+            SELECT COUNT(*) as count
+            FROM messages
             WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
-            AND room_id IS NULL 
-            AND is_deleted = FALSE
+              AND room_id IS NULL
+              AND is_deleted = FALSE
         `, [userId, otherUserId, otherUserId, userId]);
 
         if (messageCount.count === 0) {
@@ -177,11 +177,11 @@ router.delete('/dm/conversation/:userId', async (req, res) => {
         if (deleteFor === 'everyone') {
             // Delete all messages in the conversation for everyone
             await query(`
-                UPDATE messages 
+                UPDATE messages
                 SET is_deleted = TRUE, content = "[Message deleted]"
                 WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
-                AND room_id IS NULL 
-                AND is_deleted = FALSE
+                  AND room_id IS NULL
+                  AND is_deleted = FALSE
             `, [userId, otherUserId, otherUserId, userId]);
 
             deletionMessage = `All messages deleted from conversation with ${otherUser.display_name}`;
@@ -201,11 +201,11 @@ router.delete('/dm/conversation/:userId', async (req, res) => {
         } else {
             // Delete messages for current user only
             await query(`
-                UPDATE messages 
+                UPDATE messages
                 SET is_deleted = TRUE
                 WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
-                AND room_id IS NULL 
-                AND is_deleted = FALSE
+                  AND room_id IS NULL
+                  AND is_deleted = FALSE
             `, [userId, otherUserId, otherUserId, userId]);
 
             deletionMessage = `Conversation history cleared for you (${messageCount.count} messages)`;

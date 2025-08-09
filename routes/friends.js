@@ -69,7 +69,7 @@ async function updateFriendsListForUsers(userIds) {
             const result = await queryOne(`
                 SELECT COUNT(*) as count
                 FROM friends f
-                         JOIN users u ON f.requester_id = u.id
+                    JOIN users u ON f.requester_id = u.id
                 WHERE f.addressee_id = ?
                   AND f.status = 'pending'
                   AND u.is_active = TRUE
